@@ -13,13 +13,16 @@ export interface PdfConversionResult {
     if (loadPromise) return loadPromise;
   
     isLoading = true;
-    // @ts-expect-error - pdfjs-dist/build/pdf.mjs is not a module
     loadPromise = import("pdfjs-dist/build/pdf.mjs").then((lib) => {
       // Set the worker source to use local file
       lib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
       pdfjsLib = lib;
       isLoading = false;
       return lib;
+    }).catch((error) => {
+      console.error("Failed to load PDF.js:", error);
+      isLoading = false;
+      throw error;
     });
   
     return loadPromise;
@@ -29,30 +32,53 @@ export interface PdfConversionResult {
     file: File
   ): Promise<PdfConversionResult> {
     try {
+      console.log("Starting PDF conversion for file:", file.name);
+      
       const lib = await loadPdfJs();
+      console.log("PDF.js library loaded successfully");
   
       const arrayBuffer = await file.arrayBuffer();
-      const pdf = await lib.getDocument({ data: arrayBuffer }).promise;
+      console.log("File converted to ArrayBuffer, size:", arrayBuffer.byteLength);
+      
+      const pdf = await lib.getDocument({ 
+        data: arrayBuffer,
+        useSystemFonts: true,
+        disableFontFace: false
+      }).promise;
+      console.log("PDF document loaded, pages:", pdf.numPages);
+      
       const page = await pdf.getPage(1);
+      console.log("First page loaded");
   
-      const viewport = page.getViewport({ scale: 4 });
+      const viewport = page.getViewport({ scale: 2.0 }); // Reduced scale for better performance
       const canvas = document.createElement("canvas");
       const context = canvas.getContext("2d");
   
       canvas.width = viewport.width;
       canvas.height = viewport.height;
+      console.log("Canvas created with dimensions:", canvas.width, "x", canvas.height);
   
-      if (context) {
-        context.imageSmoothingEnabled = true;
-        context.imageSmoothingQuality = "high";
+      if (!context) {
+        throw new Error("Failed to get canvas 2D context");
       }
+      
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
   
-      await page.render({ canvasContext: context!, viewport }).promise;
+      const renderContext = {
+        canvasContext: context,
+        viewport: viewport
+      };
+      
+      console.log("Starting page render...");
+      await page.render(renderContext).promise;
+      console.log("Page render completed");
   
       return new Promise((resolve) => {
         canvas.toBlob(
           (blob) => {
             if (blob) {
+              console.log("Image blob created, size:", blob.size);
               // Create a File from the blob with the same name as the pdf
               const originalName = file.name.replace(/\.pdf$/i, "");
               const imageFile = new File([blob], `${originalName}.png`, {
@@ -64,6 +90,7 @@ export interface PdfConversionResult {
                 file: imageFile,
               });
             } else {
+              console.error("Failed to create image blob");
               resolve({
                 imageUrl: "",
                 file: null,
@@ -72,14 +99,15 @@ export interface PdfConversionResult {
             }
           },
           "image/png",
-          1.0
-        ); // Set quality to maximum (1.0)
+          0.95 // Slightly reduced quality for better performance
+        );
       });
     } catch (err) {
+      console.error("PDF conversion error:", err);
       return {
         imageUrl: "",
         file: null,
-        error: `Failed to convert PDF: ${err}`,
+        error: `Failed to convert PDF: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
   }
